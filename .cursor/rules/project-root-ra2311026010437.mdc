@@ -1,0 +1,17 @@
+---
+description: RA2311026010437 is the repository root; all project files live here
+alwaysApply: true
+---
+
+# Project root: `RA2311026010437`
+
+This folder is the **only** root for this project. Open it as the Cursor workspace folder (not a parent directory).
+
+## Placement
+
+- Put **all** application code, packages, configs (`package.json`, `tsconfig.json`, `.gitignore`), tests, and project docs **here** at this level or in subfolders (e.g. `logging_middleware/`).
+- Do **not** add project files under a parent path such as `Backend_App/` when that sits above this repo.
+
+## Tooling
+
+- `.cursor/rules/` and `.gitignore` belong **in this directory** (alongside `.git`).

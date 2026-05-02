@@ -1,0 +1,22 @@
+{
+  "name": "vehicle_maintence_scheduler",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vehicle maintenance scheduler (0/1 knapsack)",
+  "main": "dist/index.js",
+  "scripts": {
+    "prebuild": "cd .. && npm run build",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

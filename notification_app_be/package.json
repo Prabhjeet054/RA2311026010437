@@ -8,6 +8,7 @@
     "prebuild": "cd .. && npm run build",
     "build": "tsc",
     "start": "node dist/index.js",
+    "priority-inbox": "node dist/utils/priority_inbox.js",
     "dev": "node --watch dist/index.js"
   },
   "engines": {

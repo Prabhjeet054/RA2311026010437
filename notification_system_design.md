@@ -844,3 +844,38 @@ function on_job_failed_permanently(job, error):
 ```
 
 **Summary:** **Enqueue** per student for **parallelism** and **retries**; use **DB + outbox in one transaction** for **durability**; **email/push** after commit; **DLQ** for poison pills or exhausted retries.
+
+---
+
+# Stage 6
+
+## Priority inbox with a fixed-size min-heap
+
+For “top **k**” items by a numeric score (higher = better), sorting all **n** notifications costs **O(n log n)**. A **min-heap** of capacity **k** keeps only the **k** largest scores seen so far: the heap root is always the **smallest** among those **k** — i.e. the **weakest** of the current top-**k**. When a new notification arrives, insert it; if the heap holds **k + 1** items, **pop** the minimum. Each insert/pop is **O(log k)**.
+
+| Approach | Time complexity | Notes |
+|----------|-----------------|--------|
+| **Sort entire list** | **O(n log n)** | Simple but pays for ordering items outside the top **k**. |
+| **Min-heap of size k** | **O(n log k)** | One pass; only **k** slots matter. For **k = 10** and large **n**, **log k** is tiny. |
+
+So the **min-heap** is optimal for this streaming / “top k” problem when **k ≪ n**: same correctness as “sort and take first k,” better asymptotic dependence on **k**.
+
+---
+
+## Maintaining top 10 as new notifications arrive
+
+Use the **same** fixed-size min-heap:
+
+1. **Insert** the new notification with its priority score.
+2. If **heap size > 10**, **extractMin** (drop the lowest-priority item among the 11).
+
+Each update is **O(log k)** with **k = 10**, i.e. **O(log 10)** — constant in practice. The heap always represents the **current** top-10 unread items under the chosen scoring function, without re-sorting history.
+
+---
+
+## Scoring (reference)
+
+Aligned with `notification_app_be/src/utils/priority_inbox.ts`:
+
+- **Type weight:** Placement = 3, Result = 2, Event = 1  
+- **Combined score:** `typeWeight * 1000 + floor(unixMs / 1000)` so **type** dominates and **recency** (per-second granularity) breaks ties.

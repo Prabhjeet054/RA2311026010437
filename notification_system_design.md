@@ -484,3 +484,115 @@ WHERE student_id = $1
 ORDER BY created_at DESC
 LIMIT $3 OFFSET $4;
 ```
+
+---
+
+# Stage 3
+
+## Slow query under review
+
+The following uses **camelCase** column names as in some ORM schemas; Stage 2 uses **snake_case** (`student_id`, `is_read`, `created_at`). The analysis below applies to both naming styles.
+
+```sql
+SELECT * FROM notifications
+WHERE studentID = 1042 AND isRead = false
+ORDER BY createdAt DESC;
+```
+
+---
+
+## 1. Is the query accurate?
+
+| Verdict | Explanation |
+|---------|-------------|
+| **Logic** | **Yes** — filtering one student’s unread rows and sorting by newest first matches the intended behavior. |
+| **Practicality** | **`SELECT *` is wasteful** — it pulls every column (e.g. long `message` bodies, internal flags) when the client may only need `id`, `message`, `type`, `created_at`, etc. Prefer an explicit column list. |
+
+**Improved shape (snake_case, PostgreSQL):**
+
+```sql
+SELECT id, message, type, created_at
+FROM notifications
+WHERE student_id = $1 AND is_read = false
+ORDER BY created_at DESC;
+```
+
+---
+
+## 2. Why is it slow?
+
+| Cause | Effect |
+|-------|--------|
+| **No supporting index** on `(student_id, is_read, created_at)` | The planner may **sequentially scan** the whole table to find matching rows, then sort. |
+| **Large table** (e.g. **5,000,000** rows) | A full scan touches millions of heap pages—high I/O and latency. |
+| **`SELECT *`** | Reads **all columns** for every candidate row, increasing heap fetches and network payload even after filters. |
+
+---
+
+## 3. What would you change? Computational cost?
+
+| Change | Rationale |
+|--------|-----------|
+| **Composite index** | Matches filter + sort: same student, unread only, newest first. |
+| **Narrow `SELECT`** | Less heap I/O and smaller responses. |
+
+```sql
+CREATE INDEX idx_notifications_student_unread
+  ON notifications (student_id, is_read, created_at DESC);
+```
+
+```sql
+SELECT id, message, type, created_at
+FROM notifications
+WHERE student_id = $1 AND is_read = false
+ORDER BY created_at DESC;
+```
+
+| Aspect | Before (typical worst case) | After (index-friendly plan) |
+|--------|-----------------------------|-------------------------------|
+| **Cost model** | **O(n)** table scan over **n** rows, plus sort if needed | **O(log n)** index probes to locate the range, plus **O(k)** for **k** matching rows (often small) |
+| **Note** | Constants and constants matter; `k ≪ n` for one student’s unread list. | Inserts/updates pay a small extra cost to maintain the new index. |
+
+---
+
+## 4. Should we add indexes on every column?
+
+| Answer | Reason |
+|--------|--------|
+| **No** | **Writes** (`INSERT`, `UPDATE`, `DELETE`) must update **every** index on the table—more indexes → more work per write and more **WAL** / lock contention risk. |
+| | Each index uses **extra disk space** and **memory** for caching. |
+| | Index only columns that appear in **`WHERE`**, **`ORDER BY`**, **`JOIN`**, or selective **`GROUP BY`** patterns you actually run (and consider **partial** indexes for skewed filters). |
+
+---
+
+## 5. Students with a Placement notification in the last 7 days
+
+Stage 2 stores the category in the **`type`** column as PostgreSQL enum **`notification_type`** with values **`'Event'`**, **`'Result'`**, **`'Placement'`** (not a separate `notificationType` column).
+
+**Query:**
+
+```sql
+SELECT DISTINCT student_id
+FROM notifications
+WHERE type = 'Placement'
+  AND created_at >= NOW() - INTERVAL '7 days';
+```
+
+**Index recommendation**
+
+A **partial** index keeps the structure small when Placement rows are a fraction of all notifications; it supports the time filter and `student_id` lookups for deduplication:
+
+```sql
+CREATE INDEX idx_notifications_placement_created_at
+  ON notifications (created_at DESC, student_id)
+  WHERE type = 'Placement';
+```
+
+Alternatively, if many queries filter by **`type`** and **`created_at`** across all types, a **composite** index can serve broader workloads:
+
+```sql
+CREATE INDEX idx_notifications_type_created_at
+  ON notifications (type, created_at DESC);
+```
+
+Choose based on whether Placement-only analytics dominate (favor **partial**) or mixed-type time-range queries are common (favor **composite**).

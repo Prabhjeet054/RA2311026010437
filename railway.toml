@@ -1,0 +1,13 @@
+# Railway deploys the Express API (notification_app_be) from the repo root.
+# Set a single variable in the Railway dashboard: ACCESS_TOKEN=<your bearer token>
+# Railway injects PORT automatically — do not set it manually unless you use a custom target port.
+
+[build]
+builder = "nixpacks"
+buildCommand = "npm run railway:build"
+
+[deploy]
+startCommand = "npm start"
+healthcheckPath = "/health"
+healthcheckTimeout = 120
+restartPolicyType = "on_failure"

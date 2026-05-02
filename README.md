@@ -75,3 +75,25 @@ PORT=3000
 ```
 
 `PORT` is optional; it defaults to **3000** if omitted.
+
+## 6. Deploy on Railway (notification API)
+
+The hosted service is the **Express app** at the repository root: build compiles `logging_middleware` first, then `notification_app_be`, and `npm start` runs `node notification_app_be/dist/index.js`.
+
+### Required configuration
+
+1. **Connect this Git repository** to a new Railway service (deploy from the **repo root**, not `notification_app_be/` alone—the app imports compiled `dist/logging_middleware` from the parent directory).
+2. **Variables** (dashboard → Variables): set exactly one secret you must provide yourself:
+   - **`ACCESS_TOKEN`** — Bearer token from the evaluation auth flow (same token used for `GET /evaluation-service/notifications`).
+3. **Do not set `PORT` manually** unless you have a special setup. Railway injects **`PORT`**; the server reads it automatically.
+4. **`railway.toml`** in the repo sets the build command (`npm run railway:build`), start command (`npm start`), and health check path **`/health`**.
+
+Optional alias: if you prefer a shorter name in the dashboard, you can set **`TOKEN`** instead of **`ACCESS_TOKEN`** (either one is accepted).
+
+After deploy, open your Railway URL and verify:
+
+```text
+GET https://<your-service>.up.railway.app/health
+```
+
+The vehicle scheduler CLI is not started by Railway; run it locally or as a separate cron/worker if you need it.

@@ -3,8 +3,12 @@ import dotenv from "dotenv";
 
 dotenv.config({ path: path.resolve(__dirname, "..", "..", ".env") });
 
+/**
+ * Single secret for evaluation-service APIs. Set `ACCESS_TOKEN` in Railway (or local .env).
+ * Optional alias `TOKEN` is accepted so one variable name always works.
+ */
 export function getAccessToken(): string | undefined {
-  const raw = process.env.ACCESS_TOKEN;
+  const raw = process.env.ACCESS_TOKEN ?? process.env.TOKEN;
   if (raw === undefined || raw === null) {
     return undefined;
   }

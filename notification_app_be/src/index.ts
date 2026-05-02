@@ -15,12 +15,17 @@ async function bootstrap(): Promise<void> {
       "ACCESS_TOKEN is missing or empty in environment",
       ""
     );
-    console.error("FATAL: Set ACCESS_TOKEN in notification_app_be/.env");
+    console.error(
+      "FATAL: Set ACCESS_TOKEN in the environment (Railway Variables or .env locally)."
+    );
     process.exit(1);
   }
 
   const app = express();
   app.disable("x-powered-by");
+  if (process.env.RAILWAY_ENVIRONMENT || process.env.NODE_ENV === "production") {
+    app.set("trust proxy", 1);
+  }
   app.use(helmet());
   app.use(cors());
   app.use(express.json({ limit: "1mb" }));

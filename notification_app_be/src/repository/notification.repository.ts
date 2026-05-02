@@ -42,27 +42,47 @@ export async function fetchNotifications(token: string): Promise<Notification[]>
     "backend",
     "debug",
     "repository",
-    "GET /evaluation-service/notifications",
+    "Enter: fetch notifications from upstream",
     token
   );
 
-  const res = await fetch(`${UPSTREAM_BASE}/notifications`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  try {
+    await Log(
+      "backend",
+      "debug",
+      "repository",
+      "GET /evaluation-service/notifications",
+      token
+    );
 
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Upstream notifications failed: HTTP ${res.status} ${body}`);
-  }
+    const res = await fetch(`${UPSTREAM_BASE}/notifications`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
 
-  const data = (await res.json()) as NotificationsResponse;
-  const list = data.notifications ?? [];
-  const out: Notification[] = [];
-  for (const item of list) {
-    const n = mapToNotification(item);
-    if (n !== null) {
-      out.push(n);
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Upstream notifications failed: HTTP ${res.status} ${body}`);
     }
+
+    const data = (await res.json()) as NotificationsResponse;
+    const list = data.notifications ?? [];
+    const out: Notification[] = [];
+    for (const item of list) {
+      const n = mapToNotification(item);
+      if (n !== null) {
+        out.push(n);
+      }
+    }
+    return out;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await Log(
+      "backend",
+      "error",
+      "repository",
+      `fetchNotifications failed: ${msg}`,
+      token
+    );
+    throw err;
   }
-  return out;
 }

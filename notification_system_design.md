@@ -698,3 +698,149 @@ Below are complementary strategies to cut read load, with tradeoffs on **consist
 | **Redis** | **Caches** the **initial / paginated** list after navigation or cache miss — absorbs bursty traffic and repeated full-page loads. |
 
 Together: **push** minimizes **unnecessary** list fetches; **Redis** makes the **remaining** reads cheap and predictable. Add **cursor pagination** for large histories, and use **`Cache-Control: private, short max-age`** only as a **supplement** if you accept client-side staleness—**do not** rely on it alone for correctness after **mark-as-read**; prefer **Redis invalidation** and/or **socket** events to refresh UI state.
+
+---
+
+# Stage 5
+
+## Pseudocode under review
+
+```text
+function notify_all(student_ids: array, message: string):
+    for student_id in student_ids:
+        send_email(student_id, message)   # calls Email API
+        save_to_db(student_id, message)   # DB insert
+        push_to_app(student_id, message)  # WebSocket push
+```
+
+---
+
+## 1. Shortcomings of this implementation
+
+| Issue | Why it hurts |
+|-------|----------------|
+| **Sequential processing** | **50,000** iterations run **one after another** — total time is the **sum** of all email/DB/socket latencies; throughput is bounded by the slowest chain per student. |
+| **Single failure stops the loop** | If **`send_email`** throws at **student 200**, the loop **exits** — **49,800** students never get **`save_to_db`** or **`push_to_app`** unless you catch and continue (which the snippet does not). |
+| **No retries** | Transient SMTP or API errors cause **permanent** skip for that run; no backoff or idempotent retry. |
+| **No atomicity across channels** | **Email** (external), **DB**, and **push** are independent — you can get **email sent** but **DB insert failed**, or **DB ok** but **email failed**, leading to inconsistent user experience and reconciliation pain. |
+| **Blocking** | In many runtimes this blocks the **request thread** / event loop for the whole duration — poor latency for the caller and risk of **timeouts**. |
+
+---
+
+## 2. `send_email` failed for 200 students midway — what now?
+
+| Without a queue | Consequence |
+|-----------------|-------------|
+| **No durable work log** | Those **200** (and anyone after the abort, depending on error handling) may have **no** follow-up delivery attempt. |
+| **Partial progress** | Unless the code **records** which `student_id`s succeeded, you cannot safely **resume** or **replay** only failures. |
+
+**What you need**
+
+| Mechanism | Purpose |
+|-----------|---------|
+| **Dead-letter queue (DLQ)** or **failed_jobs** table | Store **payload + error** for manual inspection or batch replay. |
+| **Retry queue / backoff** | Automatic **re-attempts** for transient failures so students are not “skipped permanently.” |
+
+---
+
+## 3. Redesigned solution: message queue (e.g. BullMQ + Redis)
+
+| Component | Behavior |
+|-----------|----------|
+| **Producer** | For each `student_id`, **enqueue one job** `{ student_id, message, correlation_id }` into a **Redis-backed** queue (BullMQ). Return **202 Accepted** quickly to the caller. |
+| **Worker pool** | **N** workers (e.g. **50 concurrent**) **pull** jobs in parallel — bounded concurrency protects the **Email API**, **DB**, and **socket** layer. |
+| **Per-job pipeline (conceptual)** | Prefer **DB first** as source of truth, then **email**, then **push** (see §4). |
+| **Retries** | BullMQ **attempts** with exponential backoff; **`max 3`** retries on transient errors. |
+| **Exhausted retries** | Job moves to a **dead-letter** queue (or BullMQ **failed** set) for **manual** triage or scripted replay. |
+
+---
+
+## 4. Should `save_to_db` and `send_email` be atomic together?
+
+| Question | Answer |
+|----------|--------|
+| **Same DB transaction as email?** | **No** — **`send_email`** is an **external side effect**; it **cannot be rolled back** if the DB transaction aborts, and you cannot **two-phase commit** the Email SaaS with Postgres in a practical way. |
+| **Practical ordering** | **Persist first** (`save_to_db`) so the **notification exists** in the system; then **`send_email`**. If email **fails**, **retry only the email** (or enqueue an **email-delivery** job) without duplicating the row if your schema enforces idempotency (`idempotency_key`). |
+| **Stronger consistency** | **Outbox pattern**: in **one DB transaction**, insert **`notifications`** **and** a row in **`outbox_events`**. A **separate process** reads the outbox, sends email, marks the outbox row **processed** — no email send inside the same transaction as “fire HTTP request.” |
+
+---
+
+## 5. Revised pseudocode — queue, retries, outbox
+
+### A. API handler (fast return; enqueues work)
+
+```text
+function notify_all_async(student_ids: array, message: string, batch_id: uuid):
+    for student_id in student_ids:
+        enqueue_job(
+            queue: "notify_student",
+            payload: { student_id, message, batch_id },
+            options: { attempts: 4, backoff: exponential }  # 1 try + 3 retries
+        )
+    return 202 Accepted
+```
+
+### B. Worker — outbox + side effects (idempotent where possible)
+
+```text
+function process_notify_job(job):
+    student_id = job.payload.student_id
+    message    = job.payload.message
+    batch_id   = job.payload.batch_id
+
+    BEGIN TRANSACTION
+        notification_id = insert_notification(student_id, message, batch_id)
+        insert_outbox_event(
+            type: "EMAIL_AND_PUSH",
+            notification_id,
+            payload: { student_id, message, batch_id }
+        )
+    COMMIT
+    // Source of truth is committed before any external I/O
+
+    try:
+        send_email(student_id, message)
+        mark_outbox_step_done(notification_id, step: "email")
+    catch e:
+        throw e   // BullMQ retries whole job OR use sub-queue for email-only retries
+
+    try:
+        push_to_app(student_id, message)
+        mark_outbox_step_done(notification_id, step: "push")
+    catch e:
+        throw e
+
+    mark_outbox_fully_processed(notification_id)
+```
+
+### C. Alternative: outbox poller (email never inside user transaction)
+
+```text
+function outbox_poller_loop():
+    loop forever:
+        events = SELECT * FROM outbox_events WHERE status = 'pending' LIMIT 100 FOR UPDATE SKIP LOCKED
+        for event in events:
+            try:
+                if event.type == "EMAIL_AND_PUSH":
+                    send_email(event.student_id, event.message)
+                    push_to_app(event.student_id, event.message)
+                UPDATE outbox_events SET status = 'done' WHERE id = event.id
+            catch e:
+                UPDATE outbox_events SET status = 'failed', error = e, attempts = attempts + 1
+                if event.attempts >= 3:
+                    move_to_dead_letter_queue(event)
+```
+
+### D. Dead letter
+
+```text
+function on_job_failed_permanently(job, error):
+    insert_dead_letter(
+        original_payload: job.payload,
+        error: error,
+        queue: "notify_student_dlq"
+    )
+    alert_ops_if_volume_spike()
+```
+
+**Summary:** **Enqueue** per student for **parallelism** and **retries**; use **DB + outbox in one transaction** for **durability**; **email/push** after commit; **DLQ** for poison pills or exhausted retries.

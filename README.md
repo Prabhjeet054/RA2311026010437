@@ -1,45 +1,77 @@
 # RA2311026010437
 
-Node.js 18+ TypeScript project. Build tooling and dependencies live at the **repository root**; application code is organized in folders such as `logging_middleware/`.
+Node.js 18+ TypeScript monorepo: shared logging middleware, a vehicle maintenance scheduler CLI, and a notification REST API.
 
-## Setup
+## 1. Repository structure
+
+| Path | Description |
+|------|-------------|
+| `logging_middleware/` | Shared `Log()` helper for posting structured logs to the evaluation logging endpoint. |
+| `vehicle_maintence_scheduler/` | Standalone service that loads depots/vehicles from the evaluation API and runs a 0/1 knapsack scheduler. |
+| `notification_app_be/` | Express + TypeScript API that proxies and processes notifications (including priority inbox). |
+| `notification_system_design.md` | Written design for the notification platform (API, database, caching, queues). |
+| Root `package.json` / `tsconfig.json` | Builds `logging_middleware` into `dist/` for imports from subprojects. |
+
+## 2. Installing dependencies
+
+Install **each** place that has its own `package.json`:
 
 ```bash
+# Repository root (logging middleware)
 npm install
+
+# Vehicle maintenance scheduler
+cd vehicle_maintence_scheduler && npm install && cd ..
+
+# Notification backend
+cd notification_app_be && npm install && cd ..
+```
+
+## 3. Build and run `vehicle_maintence_scheduler`
+
+From the repository root:
+
+```bash
+cd vehicle_maintence_scheduler
 npm run build
+npm start
 ```
 
-Compiled output is written to `dist/` (for example `dist/logging_middleware/`).
+`npm run build` compiles the parent project first (`prebuild`), then this package, so `dist/logging_middleware` exists for imports.
 
-## Logging middleware
+Create `vehicle_maintence_scheduler/.env` (see [Environment variables](#5-environment-variables)) before running.
 
-Source: `logging_middleware/index.ts` — exports `Log`, `Stack`, `Level`, and `Package`.
+## 4. Build and run `notification_app_be`
 
-```typescript
-import { Log } from "./logging_middleware";
-
-await Log("backend", "info", "service", "User signed in", token);
-await Log("frontend", "error", "component", "Render failed", token);
+```bash
+cd notification_app_be
+npm run build
+npm start
 ```
 
-### Parameters
+The HTTP server listens on the configured port (default **3000**). Example: `GET http://localhost:3000/health`, `GET http://localhost:3000/api/v1/notifications`.
 
-| Parameter | Description |
-|-----------|-------------|
-| `stack` | `"backend"` or `"frontend"` |
-| `level` | `"debug"`, `"info"`, `"warn"`, `"error"`, or `"fatal"` |
-| `pkg` | Package name for that stack (see below) |
-| `message` | Log message |
-| `token` | Bearer token for `Authorization` |
+Optional CLI for the priority inbox utility (after build):
 
-**Backend** packages: `cache`, `controller`, `cron_job`, `db`, `domain`, `handler`, `repository`, `route`, `service`, plus shared.
+```bash
+npm run priority-inbox
+```
 
-**Frontend** packages: `api`, `component`, `hook`, `page`, `state`, `style`, plus shared.
+## 5. Environment variables
 
-**Shared** (either stack): `auth`, `config`, `middleware`, `utils`.
+Use `.env` files **next to** each app’s `package.json` (they are gitignored). Format is `KEY=value` per line.
 
-### Behavior
+### `vehicle_maintence_scheduler/.env`
 
-- `POST` to `http://20.207.122.201/evaluation-service/logs` with body `{ stack, level, package, message }` and `Authorization: Bearer <token>`.
-- On success, prints `logID` / `logId` from the JSON response with `console.log` when present.
-- Failures are handled silently (no console output for errors).
+```env
+ACCESS_TOKEN=<bearer token for evaluation-service APIs>
+```
+
+### `notification_app_be/.env`
+
+```env
+ACCESS_TOKEN=<bearer token for evaluation-service APIs>
+PORT=3000
+```
+
+`PORT` is optional; it defaults to **3000** if omitted.

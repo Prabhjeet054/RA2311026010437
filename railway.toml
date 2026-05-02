@@ -1,6 +1,6 @@
-# Railway deploys the Express API (notification_app_be) from the repo root.
-# Set a single variable in the Railway dashboard: ACCESS_TOKEN=<your bearer token>
-# Railway injects PORT automatically — do not set it manually unless you use a custom target port.
+# Single Railway service: starts notification API + runs vehicle scheduler once (child process).
+# Variables: ACCESS_TOKEN (required). Optional: RUN_VEHICLE_SCHEDULER=false to disable the scheduler.
+# Railway injects PORT — do not set manually unless needed.
 
 [build]
 builder = "nixpacks"

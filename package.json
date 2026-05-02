@@ -7,8 +7,8 @@
   "types": "dist/logging_middleware/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "railway:build": "npm ci && npm run build && npm ci --prefix notification_app_be && npm run build --prefix notification_app_be",
-    "start": "node notification_app_be/dist/index.js"
+    "railway:build": "npm run build && npm ci --prefix notification_app_be && npm run build --prefix notification_app_be && npm ci --prefix vehicle_maintence_scheduler && npm run build --prefix vehicle_maintence_scheduler",
+    "start": "node scripts/start-all.js"
   },
   "engines": {
     "node": ">=18"

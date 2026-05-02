@@ -76,24 +76,24 @@ PORT=3000
 
 `PORT` is optional; it defaults to **3000** if omitted.
 
-## 6. Deploy on Railway (notification API)
+## 6. Deploy on Railway (single service)
 
-The hosted service is the **Express app** at the repository root: build compiles `logging_middleware` first, then `notification_app_be`, and `npm start` runs `node notification_app_be/dist/index.js`.
+Use **one** Railway service for the whole repo—no separate instances for the notification API and the vehicle scheduler.
+
+- **Build** (`npm run railway:build`): compiles `logging_middleware`, then `notification_app_be`, then `vehicle_maintence_scheduler`.
+- **Start** (`npm start` → `scripts/start-all.js`): starts the **Express notification API** (main process) and runs the **vehicle maintenance scheduler once** in a **child process** (same `ACCESS_TOKEN`). The API stays up for health checks; the scheduler exits after printing its report.
 
 ### Required configuration
 
-1. **Connect this Git repository** to a new Railway service (deploy from the **repo root**, not `notification_app_be/` alone—the app imports compiled `dist/logging_middleware` from the parent directory).
-2. **Variables** (dashboard → Variables): set exactly one secret you must provide yourself:
-   - **`ACCESS_TOKEN`** — Bearer token from the evaluation auth flow (same token used for `GET /evaluation-service/notifications`).
-3. **Do not set `PORT` manually** unless you have a special setup. Railway injects **`PORT`**; the server reads it automatically.
-4. **`railway.toml`** in the repo sets the build command (`npm run railway:build`), start command (`npm start`), and health check path **`/health`**.
+1. **Deploy from the repository root** (not a subfolder)—the layout depends on `dist/logging_middleware` at the parent level.
+2. **Variables:** set **`ACCESS_TOKEN`** (Bearer token from the evaluation auth flow). Optional alias: **`TOKEN`**.
+3. **Do not set `PORT`** unless you have a special setup; Railway injects it.
+4. Optional: **`RUN_VEHICLE_SCHEDULER=false`** — start only the HTTP API (skip the vehicle scheduler child).
 
-Optional alias: if you prefer a shorter name in the dashboard, you can set **`TOKEN`** instead of **`ACCESS_TOKEN`** (either one is accepted).
+**Build note:** Nixpacks runs `npm ci` at the root before `railway:build`, so `railway:build` does **not** repeat root `npm ci` (avoids Docker `EBUSY` on `node_modules/.cache`).
 
-After deploy, open your Railway URL and verify:
+After deploy:
 
 ```text
 GET https://<your-service>.up.railway.app/health
 ```
-
-The vehicle scheduler CLI is not started by Railway; run it locally or as a separate cron/worker if you need it.

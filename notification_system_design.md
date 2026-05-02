@@ -596,3 +596,105 @@ CREATE INDEX idx_notifications_type_created_at
 ```
 
 Choose based on whether Placement-only analytics dominate (favor **partial**) or mixed-type time-range queries are common (favor **composite**).
+
+---
+
+# Stage 4
+
+## Problem
+
+Notifications are loaded on **every page load** for **every** student. Naïve **`GET /notifications`** on each navigation creates a **thundering herd** of identical database reads and can overwhelm the DB.
+
+Below are complementary strategies to cut read load, with tradeoffs on **consistency**, **performance**, and **complexity**.
+
+---
+
+## Strategy 1 — Redis cache (recommended)
+
+| Aspect | Detail |
+|--------|--------|
+| **Cache key** | `notifications:{studentId}` (or versioned: `notifications:v1:{studentId}`) |
+| **TTL** | **30–60 seconds** (tune per freshness requirements) |
+| **Read path** | On **`GET /notifications`**: **GET** Redis → on **miss**, query PostgreSQL → **SET** key with TTL → return payload |
+| **Write path** | On **mark-as-read** (single or bulk): **DELETE** (or **invalidate**) `notifications:{studentId}` so the next read repopulates from DB |
+
+**Tradeoffs**
+
+| Dimension | Effect |
+|-----------|--------|
+| **Consistency** | **Eventual** — clients may see data up to **TTL** seconds old unless invalidated on writes you control. |
+| **Performance** | **Large win** — hot keys served from memory; DB QPS drops sharply for repeat page loads. |
+| **Complexity** | **Medium** — Redis cluster, eviction policy, serialization format (JSON), and **invalidation discipline** on every mutation path. |
+
+---
+
+## Strategy 2 — HTTP response caching (`Cache-Control`)
+
+| Aspect | Detail |
+|--------|--------|
+| **Header** | e.g. **`Cache-Control: private, max-age=30`** — **private** so user-specific lists are not stored on shared CDN caches inappropriately. |
+| **Where it helps** | Browser (and optionally **private** CDN behaviors) reuse the last response without calling the origin for **max-age** seconds. |
+
+**Tradeoffs**
+
+| Dimension | Effect |
+|-----------|--------|
+| **Consistency** | **Weak for reads** — after **mark-as-read**, the browser may still show a cached list until **max-age** expires; **no server-side invalidation** of browser cache. |
+| **Performance** | **Good** for repeat navigations **within one device/session**; does not reduce load from **different clients** or **first** request per interval. |
+| **Complexity** | **Low** — set headers in the API gateway or app; must align with auth and **Vary** if responses differ by cookie/header. |
+
+---
+
+## Strategy 3 — Pagination (cursor-based)
+
+| Aspect | Detail |
+|--------|--------|
+| **Goal** | Do **not** return the full history on every load. |
+| **Mechanism** | **Cursor-based** pagination using **`created_at`** (and **`id`** as tiebreaker): e.g. `?limit=20&cursor=<opaque>` where cursor encodes last seen `(created_at, id)`. |
+
+**Tradeoffs**
+
+| Dimension | Effect |
+|-----------|--------|
+| **Consistency** | **Stable pages** if cursors are opaque and ordered; new inserts can **shift** what “next page” means—document whether duplicates/skips are acceptable. |
+| **Performance** | **Strong** — smaller rows per request, less JSON, shorter DB queries with **`LIMIT`**. |
+| **Complexity** | **Medium** — cursor encoding, edge cases (clock skew, deletes), and UX for “infinite scroll”. |
+
+---
+
+## Strategy 4 — WebSocket push instead of polling
+
+| Aspect | Detail |
+|--------|--------|
+| **Idea** | Students **do not poll** on an interval; the server **pushes** new notifications (Stage 1: e.g. **`notification:new`**) when they are created. |
+| **Effect** | Removes **repeated** **`GET /notifications`** used only to “check for updates”; initial load may still hit the API once, then deltas via socket. |
+
+**Tradeoffs**
+
+| Dimension | Effect |
+|-----------|--------|
+| **Consistency** | **High** for **new** items — delivery is near real-time; still need reconciliation (reconnect, missed events) via a **sync** endpoint or idempotent event IDs. |
+| **Performance** | **Excellent** for reducing **read amplification**; shifts cost to **connection fan-out**, **presence**, and **horizontal scaling** of the socket tier. |
+| **Complexity** | **Higher** — sticky sessions or Redis pub/sub, auth on handshake, backoff, mobile background limits. |
+
+---
+
+## Summary: consistency vs performance vs complexity
+
+| Strategy | Consistency | Performance | Complexity |
+|----------|-------------|-------------|------------|
+| **Redis** | Slight staleness (TTL); better if invalidated on write | Very high for repeated reads | Medium |
+| **HTTP cache** | Can be stale until `max-age`; hard to invalidate on read | Good for same client repeats | Low |
+| **Pagination** | Depends on cursor design | High (smaller payloads/queries) | Medium |
+| **WebSockets** | Strong for new events; needs sync story | Eliminates polling churn | Higher |
+
+---
+
+## Recommended combination: Redis + WebSockets
+
+| Layer | Role |
+|-------|------|
+| **WebSockets** | **Primary** mechanism for **new** notifications — avoids polling loops that hammer **`GET /notifications`**. |
+| **Redis** | **Caches** the **initial / paginated** list after navigation or cache miss — absorbs bursty traffic and repeated full-page loads. |
+
+Together: **push** minimizes **unnecessary** list fetches; **Redis** makes the **remaining** reads cheap and predictable. Add **cursor pagination** for large histories, and use **`Cache-Control: private, short max-age`** only as a **supplement** if you accept client-side staleness—**do not** rely on it alone for correctness after **mark-as-read**; prefer **Redis invalidation** and/or **socket** events to refresh UI state.
